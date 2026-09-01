@@ -22,7 +22,6 @@ type Position =
   | 'bottom-center'
   | 'bottom-right';
 
-type Ink = 'white' | 'black' | 'lime';
 type ExportFormat = 'png' | 'jpg';
 type WatermarkType = 'text' | 'image';
 
@@ -224,12 +223,6 @@ const positionOptions: Array<{
   { id: 'bottom-right', label: 'Bottom right', symbol: '↘' },
 ];
 
-const inkOptions: Array<{ id: Ink; label: string }> = [
-  { id: 'white', label: 'White ink' },
-  { id: 'black', label: 'Black ink' },
-  { id: 'lime', label: 'Lime ink' },
-];
-
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
 }
@@ -238,32 +231,32 @@ function rangeFill(value: number, minimum: number, maximum: number) {
   return ((value - minimum) / (maximum - minimum)) * 100 + '%';
 }
 
-function drawRoundedRect(
-  context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
+function brightnessColor(value: number) {
+  const channel = Math.round((clamp(value, 0, 100) / 100) * 255);
+  return `rgb(${channel}, ${channel}, ${channel})`;
+}
+
+function createTintedWatermark(
+  image: HTMLImageElement,
   width: number,
   height: number,
-  radius: number,
+  color: string,
 ) {
-  const safeRadius = Math.min(radius, width / 2, height / 2);
+  const tintedCanvas = document.createElement('canvas');
+  tintedCanvas.width = Math.max(1, Math.ceil(width));
+  tintedCanvas.height = Math.max(1, Math.ceil(height));
 
-  context.beginPath();
-  context.moveTo(x + safeRadius, y);
-  context.lineTo(x + width - safeRadius, y);
-  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
-  context.lineTo(x + width, y + height - safeRadius);
-  context.quadraticCurveTo(
-    x + width,
-    y + height,
-    x + width - safeRadius,
-    y + height,
-  );
-  context.lineTo(x + safeRadius, y + height);
-  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
-  context.lineTo(x, y + safeRadius);
-  context.quadraticCurveTo(x, y, x + safeRadius, y);
-  context.closePath();
+  const tintedContext = tintedCanvas.getContext('2d');
+  if (!tintedContext) {
+    return null;
+  }
+
+  tintedContext.drawImage(image, 0, 0, width, height);
+  tintedContext.globalCompositeOperation = 'source-in';
+  tintedContext.fillStyle = color;
+  tintedContext.fillRect(0, 0, tintedCanvas.width, tintedCanvas.height);
+
+  return tintedCanvas;
 }
 
 function createDemoImage() {
@@ -384,10 +377,9 @@ export default function Home() {
   const [newWatermarkImage, setNewWatermarkImage] = useState('');
   const [addWatermarkError, setAddWatermarkError] = useState<string | null>(null);
   const [position, setPosition] = useState<Position>('bottom-right');
-  const [opacity, setOpacity] = useState(82);
+  const [opacity, setOpacity] = useState(50);
   const [scale, setScale] = useState(100);
-  const [ink, setInk] = useState<Ink>('white');
-  const [frosted, setFrosted] = useState(true);
+  const [brightness, setBrightness] = useState(100);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png');
   const [isDragging, setIsDragging] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
@@ -540,49 +532,23 @@ export default function Home() {
         y = height - margin - markHeight;
       }
 
-      const colors = {
-        white: {
-          text: '#ffffff',
-          surface: 'rgba(15, 29, 27, .72)',
-          shadow: 'rgba(15, 29, 27, .24)',
-        },
-        black: {
-          text: '#17241f',
-          surface: 'rgba(255, 252, 244, .88)',
-          shadow: 'rgba(255, 252, 244, .2)',
-        },
-        lime: {
-          text: '#163027',
-          surface: 'rgba(217, 255, 90, .92)',
-          shadow: 'rgba(24, 59, 51, .22)',
-        },
-      };
-      const selectedColors = colors[ink];
-
+      const watermarkColor = brightnessColor(brightness);
       context.save();
       context.globalAlpha = opacity / 100;
-      context.shadowColor = selectedColors.shadow;
-      context.shadowBlur = frosted ? fontSize * 0.75 : fontSize * 0.35;
-      context.shadowOffsetY = fontSize * 0.14;
-
-      if (frosted && selectedWatermark.type === 'text') {
-        context.fillStyle = selectedColors.surface;
-        drawRoundedRect(context, x, y, markWidth, markHeight, fontSize * 0.42);
-        context.fill();
-      }
 
       if (selectedWatermark.type === 'image') {
-        context.shadowColor = 'transparent';
-        context.drawImage(
+        const tintedWatermark = createTintedWatermark(
           watermarkImage as HTMLImageElement,
-          x + paddingX,
-          y + paddingY,
           imageWidth,
           imageHeight,
+          watermarkColor,
         );
+
+        if (tintedWatermark) {
+          context.drawImage(tintedWatermark, x + paddingX, y + paddingY);
+        }
       } else {
-        context.shadowColor = 'transparent';
-        context.fillStyle = selectedColors.text;
+        context.fillStyle = watermarkColor;
         context.font = '700 ' + fontSize + 'px Arial, sans-serif';
         context.textBaseline = 'middle';
         context.fillText(label, x + paddingX, y + markHeight / 2);
@@ -624,9 +590,8 @@ export default function Home() {
       }
     };
   }, [
-    frosted,
+    brightness,
     imageSource,
-    ink,
     opacity,
     position,
     scale,
@@ -1219,45 +1184,27 @@ export default function Home() {
                 onChange={(event) => setScale(Number(event.target.value))}
               />
             </div>
-          </div>
-
-          <div className="control-section compact-section">
-            <div className="section-heading">
-              <span className="section-label">Ink</span>
-              <span className="section-value">Choose a contrast</span>
+            <div className="range-control">
+              <div className="section-heading">
+                <label className="section-label" htmlFor="brightness">
+                  Brightness
+                </label>
+                <output htmlFor="brightness">{brightness}%</output>
+              </div>
+              <input
+                id="brightness"
+                type="range"
+                min="0"
+                max="100"
+                value={brightness}
+                style={
+                  {
+                    '--range-fill': rangeFill(brightness, 0, 100),
+                  } as CSSProperties
+                }
+                onChange={(event) => setBrightness(Number(event.target.value))}
+              />
             </div>
-            <div className="ink-list">
-              {inkOptions.map((option) => (
-                <button
-                  className={
-                    ink === option.id ? 'ink-button is-selected' : 'ink-button'
-                  }
-                  key={option.id}
-                  type="button"
-                  onClick={() => setInk(option.id)}
-                  aria-label={option.label}
-                  aria-pressed={ink === option.id}
-                >
-                  <span className={'ink-swatch ink-swatch--' + option.id} />
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="control-section compact-section switch-row">
-            <div>
-              <span className="section-label">Frosted backing</span>
-              <span className="helper-text">Keeps the mark readable on busy art</span>
-            </div>
-            <button
-              className={frosted ? 'switch is-on' : 'switch'}
-              type="button"
-              role="switch"
-              aria-checked={frosted}
-              onClick={() => setFrosted((current) => !current)}
-            >
-              <span />
-            </button>
           </div>
 
           <div className="export-block">
