@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "grok",
+      "name": "Grok",
+      "watermarks": [
+        {
+          "id": "name",
+          "label": "name",
+          "type": "text",
+          "text": "MADE WITH GROK",
+          "hint": "Provider name"
+        },
+        {
+          "id": "image",
+          "label": "image",
+          "type": "image",
+          "image": "/provider-icons/grok.svg",
+          "hint": "Provider image"
+        }
+      ]
+    },
+    {
+      "id": "chatgpt",
+      "name": "ChatGPT",
+      "watermarks": [
+        {
+          "id": "name",
+          "label": "name",
+          "type": "text",
+          "text": "MADE WITH CHATGPT",
+          "hint": "Provider name"
+        },
+        {
+          "id": "image",
+          "label": "image",
+          "type": "image",
+          "image": "/provider-icons/chatgpt.svg",
+          "hint": "Provider image"
+        }
+      ]
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini",
+      "watermarks": [
+        {
+          "id": "name",
+          "label": "name",
+          "type": "text",
+          "text": "MADE WITH GEMINI",
+          "hint": "Provider name"
+        },
+        {
+          "id": "image",
+          "label": "image",
+          "type": "image",
+          "image": "/provider-icons/gemini.svg",
+          "hint": "Provider image"
+        }
+      ]
+    }
+  ]
+}

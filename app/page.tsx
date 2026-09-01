@@ -1,8 +1,15 @@
 'use client';
 
-import type { CSSProperties, ChangeEvent, DragEvent, KeyboardEvent } from 'react';
+import type {
+  CSSProperties,
+  ChangeEvent,
+  DragEvent,
+  FormEvent,
+  KeyboardEvent,
+} from 'react';
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import defaultWatermarkConfig from '../config/watermarks.json';
 
 type Position =
   | 'top-left'
@@ -17,87 +24,189 @@ type Position =
 
 type Ink = 'white' | 'black' | 'lime';
 type ExportFormat = 'png' | 'jpg';
+type WatermarkType = 'text' | 'image';
+
+type WatermarkPreset = {
+  id: string;
+  label: string;
+  type: WatermarkType;
+  text?: string;
+  image?: string;
+  hint?: string;
+};
+
+type ProviderConfig = {
+  id: string;
+  name: string;
+  watermarks: WatermarkPreset[];
+};
+
+type WatermarkConfig = {
+  version: number;
+  providers: ProviderConfig[];
+};
 
 type WatermarkOption = {
   id: string;
+  providerId: string;
   provider: string;
+  watermarkId: string;
   watermark: string;
+  type: WatermarkType;
   text: string;
+  image?: string;
   hint: string;
 };
 
-const watermarkOptions: WatermarkOption[] = [
-  {
-    id: 'grok/name',
-    provider: 'grok',
-    watermark: 'name',
-    text: 'MADE WITH GROK',
-    hint: 'Provider name',
-  },
-  {
-    id: 'grok/logo',
-    provider: 'grok',
-    watermark: 'logo',
-    text: 'GROK',
-    hint: 'Provider logo label',
-  },
-  {
-    id: 'gemini/name',
-    provider: 'gemini',
-    watermark: 'name',
-    text: 'MADE WITH GEMINI',
-    hint: 'Provider name',
-  },
-  {
-    id: 'gemini/logo',
-    provider: 'gemini',
-    watermark: 'logo',
-    text: 'GEMINI',
-    hint: 'Provider logo label',
-  },
-  {
-    id: 'chatgpt/name',
-    provider: 'chatgpt',
-    watermark: 'name',
-    text: 'MADE WITH CHATGPT',
-    hint: 'Provider name',
-  },
-  {
-    id: 'chatgpt/logo',
-    provider: 'chatgpt',
-    watermark: 'logo',
-    text: 'CHATGPT',
-    hint: 'Provider logo label',
-  },
-  {
-    id: 'midjourney/name',
-    provider: 'midjourney',
-    watermark: 'name',
-    text: 'MADE WITH MIDJOURNEY',
-    hint: 'Provider name',
-  },
-  {
-    id: 'midjourney/logo',
-    provider: 'midjourney',
-    watermark: 'logo',
-    text: 'MIDJOURNEY',
-    hint: 'Provider logo label',
-  },
-  {
-    id: 'custom/text',
-    provider: 'custom',
-    watermark: 'text',
-    text: 'AI GENERATED',
-    hint: 'Write your own copy',
-  },
-  {
-    id: 'custom/image',
-    provider: 'custom',
-    watermark: 'image',
-    text: 'CUSTOM IMAGE',
-    hint: 'Use a custom image label',
-  },
-];
+const watermarkStorageKey = 'grokmark-watermark-config';
+const watermarkConfigChangeEvent = 'grokmark-watermark-config-change';
+const newProviderValue = '__new_provider__';
+const maxWatermarkTextLength = 32;
+const defaultProviders = defaultWatermarkConfig.providers as ProviderConfig[];
+
+function flattenWatermarkConfig(providers: ProviderConfig[]) {
+  return providers.flatMap((provider) =>
+    provider.watermarks.map((watermark) => ({
+      id: `${provider.id}/${watermark.id}`,
+      providerId: provider.id,
+      provider: provider.name,
+      watermarkId: watermark.id,
+      watermark: watermark.label,
+      type: watermark.type,
+      text:
+        watermark.text?.trim() || watermark.label.toUpperCase(),
+      image: watermark.image,
+      hint:
+        watermark.hint ||
+        (watermark.type === 'image' ? 'Image link' : 'Plain text'),
+    })),
+  );
+}
+
+const defaultWatermarkOptions = flattenWatermarkConfig(defaultProviders);
+const defaultSelectedWatermarkId = defaultWatermarkOptions[0]?.id ?? '';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isWatermarkConfig(value: unknown): value is WatermarkConfig {
+  if (!isRecord(value) || !Array.isArray(value.providers)) {
+    return false;
+  }
+
+  return value.providers.every((provider) => {
+    if (
+      !isRecord(provider) ||
+      typeof provider.id !== 'string' ||
+      typeof provider.name !== 'string' ||
+      !provider.name.trim() ||
+      !Array.isArray(provider.watermarks) ||
+      provider.watermarks.length === 0
+    ) {
+      return false;
+    }
+
+    return provider.watermarks.every((watermark) => {
+      if (
+        !isRecord(watermark) ||
+        typeof watermark.id !== 'string' ||
+        typeof watermark.label !== 'string' ||
+        !watermark.label.trim() ||
+        (watermark.type !== 'text' && watermark.type !== 'image')
+      ) {
+        return false;
+      }
+
+      return watermark.type === 'text'
+        ? typeof watermark.text === 'string' && Boolean(watermark.text.trim())
+        : typeof watermark.image === 'string' && Boolean(watermark.image.trim());
+    });
+  });
+}
+
+function parseStoredWatermarkConfig(serializedConfig: string | null) {
+  if (!serializedConfig) {
+    return null;
+  }
+
+  try {
+    const parsedConfig: unknown = JSON.parse(serializedConfig);
+    return isWatermarkConfig(parsedConfig)
+      ? cloneProviders(parsedConfig.providers)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function subscribeToWatermarkConfig(onStoreChange: () => void) {
+  window.addEventListener('storage', onStoreChange);
+  window.addEventListener(watermarkConfigChangeEvent, onStoreChange);
+
+  return () => {
+    window.removeEventListener('storage', onStoreChange);
+    window.removeEventListener(watermarkConfigChangeEvent, onStoreChange);
+  };
+}
+
+function getWatermarkConfigSnapshot() {
+  try {
+    return window.localStorage.getItem(watermarkStorageKey);
+  } catch {
+    return null;
+  }
+}
+
+function getServerWatermarkConfigSnapshot() {
+  return null;
+}
+
+function cloneProviders(providers: ProviderConfig[]) {
+  return providers.map((provider) => ({
+    ...provider,
+    watermarks: provider.watermarks.map((watermark) => ({ ...watermark })),
+  }));
+}
+
+function slugify(value: string, fallback: string) {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || fallback
+  );
+}
+
+function uniqueId(base: string, existingIds: Set<string>) {
+  let candidate = base;
+  let suffix = 2;
+
+  while (existingIds.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
+function isImageReference(value: string) {
+  if (value.startsWith('/')) {
+    return true;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function optionDomId(id: string) {
+  return id.replace(/[^a-zA-Z0-9_-]/g, '-');
+}
 
 const positionOptions: Array<{
   id: Position;
@@ -239,6 +348,8 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const watermarkPickerRef = useRef<HTMLDivElement>(null);
   const watermarkSearchRef = useRef<HTMLInputElement>(null);
+  const addWatermarkProviderRef = useRef<HTMLSelectElement>(null);
+  const addWatermarkLabelRef = useRef<HTMLInputElement>(null);
 
   const [imageSource, setImageSource] = useState<string | null>(null);
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(
@@ -246,11 +357,32 @@ export default function Home() {
   );
   const [sourceLabel, setSourceLabel] = useState('No image loaded');
   const [fileName, setFileName] = useState('grokmark-export');
-  const [selectedWatermarkId, setSelectedWatermarkId] = useState('grok/name');
+  const storedWatermarkConfig = useSyncExternalStore(
+    subscribeToWatermarkConfig,
+    getWatermarkConfigSnapshot,
+    getServerWatermarkConfigSnapshot,
+  );
+  const providerConfigs =
+    parseStoredWatermarkConfig(storedWatermarkConfig) ?? defaultProviders;
+  const [selectedWatermarkId, setSelectedWatermarkId] = useState(
+    defaultSelectedWatermarkId,
+  );
   const [watermarkSearch, setWatermarkSearch] = useState('');
   const [isWatermarkMenuOpen, setIsWatermarkMenuOpen] = useState(false);
   const [highlightedWatermarkIndex, setHighlightedWatermarkIndex] = useState(0);
-  const [watermarkText, setWatermarkText] = useState('MADE WITH GROK');
+  const [watermarkText, setWatermarkText] = useState(
+    defaultWatermarkOptions[0]?.text ?? 'AI GENERATED',
+  );
+  const [isAddWatermarkOpen, setIsAddWatermarkOpen] = useState(false);
+  const [newProviderId, setNewProviderId] = useState(
+    defaultProviders[0]?.id ?? newProviderValue,
+  );
+  const [newProviderName, setNewProviderName] = useState('');
+  const [newWatermarkLabel, setNewWatermarkLabel] = useState('');
+  const [newWatermarkType, setNewWatermarkType] = useState<WatermarkType>('text');
+  const [newWatermarkText, setNewWatermarkText] = useState('');
+  const [newWatermarkImage, setNewWatermarkImage] = useState('');
+  const [addWatermarkError, setAddWatermarkError] = useState<string | null>(null);
   const [position, setPosition] = useState<Position>('bottom-right');
   const [opacity, setOpacity] = useState(82);
   const [scale, setScale] = useState(100);
@@ -261,6 +393,50 @@ export default function Home() {
   const [canvasReady, setCanvasReady] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const watermarkOptions = flattenWatermarkConfig(providerConfigs);
+  const selectedWatermark =
+    watermarkOptions.find((option) => option.id === selectedWatermarkId) ??
+    watermarkOptions[0] ??
+    ({
+      id: 'fallback/name',
+      providerId: 'fallback',
+      provider: 'Provider',
+      watermarkId: 'name',
+      watermark: 'name',
+      type: 'text',
+      text: 'AI GENERATED',
+      hint: 'Plain text',
+    } satisfies WatermarkOption);
+  const normalizedWatermarkSearch = watermarkSearch.trim().toLowerCase();
+  const filteredWatermarkOptions = normalizedWatermarkSearch
+    ? watermarkOptions.filter((option) =>
+        `${option.provider}/${option.watermark} ${option.hint}`
+          .toLowerCase()
+          .includes(normalizedWatermarkSearch),
+      )
+    : watermarkOptions;
+
+  function saveProviderConfigs(nextProviders: ProviderConfig[]) {
+    try {
+      const configToStore: WatermarkConfig = {
+        version: 1,
+        providers: nextProviders,
+      };
+      window.localStorage.setItem(watermarkStorageKey, JSON.stringify(configToStore));
+      window.dispatchEvent(new Event(watermarkConfigChangeEvent));
+      return true;
+    } catch {
+      setNotice('Custom watermarks could not be saved in this browser.');
+      return false;
+    }
+  }
+
+  function updateProviderConfigs(
+    update: (currentProviders: ProviderConfig[]) => ProviderConfig[],
+  ) {
+    return saveProviderConfigs(update(providerConfigs));
+  }
+
   useEffect(() => {
     const canvas = canvasRef.current;
 
@@ -269,44 +445,85 @@ export default function Home() {
       return;
     }
 
-    const image = new Image();
-    image.decoding = 'async';
-    image.onload = () => {
-      const context = canvas.getContext('2d');
+    setCanvasReady(false);
+    const previewCanvas = canvas;
+    const sourceImage = new Image();
+    const watermarkImage =
+      selectedWatermark.type === 'image' ? new Image() : null;
+    let sourceReady = false;
+    let watermarkReady = watermarkImage === null;
+    let isCancelled = false;
+
+    sourceImage.decoding = 'async';
+    if (watermarkImage) {
+      watermarkImage.crossOrigin = 'anonymous';
+      watermarkImage.decoding = 'async';
+    }
+
+    function drawPreview() {
+      if (!sourceReady || !watermarkReady || isCancelled) {
+        return;
+      }
+
+      const context = previewCanvas.getContext('2d');
       if (!context) {
         setNotice('This browser could not create a canvas preview.');
         return;
       }
 
-      const width = image.naturalWidth;
-      const height = image.naturalHeight;
-      canvas.width = width;
-      canvas.height = height;
+      const width = sourceImage.naturalWidth;
+      const height = sourceImage.naturalHeight;
+      previewCanvas.width = width;
+      previewCanvas.height = height;
       setImageSize({ width, height });
 
       context.clearRect(0, 0, width, height);
-      context.drawImage(image, 0, 0, width, height);
+      context.drawImage(sourceImage, 0, 0, width, height);
 
       const shortestEdge = Math.min(width, height);
       const margin = Math.max(20, shortestEdge * 0.045);
-      const label = (watermarkText.trim() || 'AI GENERATED').toUpperCase();
-      let fontSize = clamp(shortestEdge * 0.044 * (scale / 100), 18, 104);
-
-      context.font = '700 ' + fontSize + 'px Arial, sans-serif';
-      let textWidth = context.measureText(label).width;
       const maxMarkWidth = Math.max(90, width - margin * 2);
-      const requestedMarkWidth = textWidth + fontSize * 1.8;
+      let markWidth = maxMarkWidth;
+      let markHeight = 0;
+      let paddingX = 0;
+      let paddingY = 0;
+      let fontSize = clamp(shortestEdge * 0.044 * (scale / 100), 18, 104);
+      let label = '';
+      let imageWidth = 0;
+      let imageHeight = 0;
 
-      if (requestedMarkWidth > maxMarkWidth) {
-        fontSize = Math.max(12, fontSize * (maxMarkWidth / requestedMarkWidth));
+      if (selectedWatermark.type === 'image') {
+        const sourceWidth = watermarkImage?.naturalWidth || 1;
+        const sourceHeight = watermarkImage?.naturalHeight || 1;
+        const maxImageSize = clamp(shortestEdge * 0.18 * (scale / 100), 48, 240);
+        const maxImageDimension = Math.max(28, Math.min(maxImageSize, maxMarkWidth * 0.68));
+        const imageScale = Math.min(
+          maxImageDimension / sourceWidth,
+          maxImageDimension / sourceHeight,
+        );
+        imageWidth = Math.max(1, sourceWidth * imageScale);
+        imageHeight = Math.max(1, sourceHeight * imageScale);
+        paddingX = Math.max(12, imageWidth * 0.18);
+        paddingY = Math.max(10, imageHeight * 0.18);
+        markWidth = Math.min(maxMarkWidth, imageWidth + paddingX * 2);
+        markHeight = imageHeight + paddingY * 2;
+      } else {
+        label = (watermarkText.trim() || selectedWatermark.text || 'AI GENERATED').toUpperCase();
         context.font = '700 ' + fontSize + 'px Arial, sans-serif';
-        textWidth = context.measureText(label).width;
-      }
+        let textWidth = context.measureText(label).width;
+        const requestedMarkWidth = textWidth + fontSize * 1.8;
 
-      const paddingX = fontSize * 0.9;
-      const paddingY = fontSize * 0.6;
-      const markWidth = Math.min(maxMarkWidth, textWidth + paddingX * 2);
-      const markHeight = fontSize + paddingY * 2;
+        if (requestedMarkWidth > maxMarkWidth) {
+          fontSize = Math.max(12, fontSize * (maxMarkWidth / requestedMarkWidth));
+          context.font = '700 ' + fontSize + 'px Arial, sans-serif';
+          textWidth = context.measureText(label).width;
+        }
+
+        paddingX = fontSize * 0.9;
+        paddingY = fontSize * 0.6;
+        markWidth = Math.min(maxMarkWidth, textWidth + paddingX * 2);
+        markHeight = fontSize + paddingY * 2;
+      }
 
       let x = margin;
       let y = margin;
@@ -348,31 +565,77 @@ export default function Home() {
       context.shadowBlur = frosted ? fontSize * 0.75 : fontSize * 0.35;
       context.shadowOffsetY = fontSize * 0.14;
 
-      if (frosted) {
+      if (frosted && selectedWatermark.type === 'text') {
         context.fillStyle = selectedColors.surface;
         drawRoundedRect(context, x, y, markWidth, markHeight, fontSize * 0.42);
         context.fill();
       }
 
-      context.shadowColor = 'transparent';
-      context.fillStyle = selectedColors.text;
-      context.font = '700 ' + fontSize + 'px Arial, sans-serif';
-      context.textBaseline = 'middle';
-      context.fillText(label, x + paddingX, y + markHeight / 2);
+      if (selectedWatermark.type === 'image') {
+        context.shadowColor = 'transparent';
+        context.drawImage(
+          watermarkImage as HTMLImageElement,
+          x + paddingX,
+          y + paddingY,
+          imageWidth,
+          imageHeight,
+        );
+      } else {
+        context.shadowColor = 'transparent';
+        context.fillStyle = selectedColors.text;
+        context.font = '700 ' + fontSize + 'px Arial, sans-serif';
+        context.textBaseline = 'middle';
+        context.fillText(label, x + paddingX, y + markHeight / 2);
+      }
       context.restore();
       setCanvasReady(true);
+    }
+
+    sourceImage.onload = () => {
+      sourceReady = true;
+      drawPreview();
     };
-    image.onerror = () => {
+    sourceImage.onerror = () => {
       setCanvasReady(false);
       setNotice('That image could not be read. Try a PNG, JPG, or WEBP file.');
     };
-    image.src = imageSource;
+
+    if (watermarkImage) {
+      watermarkImage.onload = () => {
+        watermarkReady = true;
+        drawPreview();
+      };
+      watermarkImage.onerror = () => {
+        setCanvasReady(false);
+        setNotice('That watermark image could not be loaded. Check its image link.');
+      };
+      watermarkImage.src = selectedWatermark.image ?? '';
+    }
+
+    sourceImage.src = imageSource;
 
     return () => {
-      image.onload = null;
-      image.onerror = null;
+      isCancelled = true;
+      sourceImage.onload = null;
+      sourceImage.onerror = null;
+      if (watermarkImage) {
+        watermarkImage.onload = null;
+        watermarkImage.onerror = null;
+      }
     };
-  }, [frosted, imageSource, ink, opacity, position, scale, watermarkText]);
+  }, [
+    frosted,
+    imageSource,
+    ink,
+    opacity,
+    position,
+    scale,
+    selectedWatermark.id,
+    selectedWatermark.image,
+    selectedWatermark.text,
+    selectedWatermark.type,
+    watermarkText,
+  ]);
 
   useEffect(() => {
     if (!isWatermarkMenuOpen) {
@@ -404,6 +667,23 @@ export default function Home() {
       document.removeEventListener('keydown', closeOnEscape);
     };
   }, [isWatermarkMenuOpen]);
+
+  useEffect(() => {
+    if (!isAddWatermarkOpen) {
+      return;
+    }
+
+    addWatermarkLabelRef.current?.focus();
+
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        closeAddWatermarkDialog();
+      }
+    }
+
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [isAddWatermarkOpen]);
 
   function acceptImage(file: File) {
     if (!file.type.startsWith('image/')) {
@@ -474,42 +754,146 @@ export default function Home() {
     }
 
     const mimeType = exportFormat === 'png' ? 'image/png' : 'image/jpeg';
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          setNotice('The marked image could not be exported.');
-          return;
-        }
+    try {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            setNotice('The marked image could not be exported.');
+            return;
+          }
 
-        const downloadUrl = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download =
-          (fileName || 'grokmark-export') + '-watermarked.' + exportFormat;
-        link.click();
-        URL.revokeObjectURL(downloadUrl);
-        setNotice('Exported ' + exportFormat.toUpperCase() + '.');
-      },
-      mimeType,
-      0.92,
-    );
+          const downloadUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = downloadUrl;
+          link.download =
+            (fileName || 'grokmark-export') + '-watermarked.' + exportFormat;
+          link.click();
+          URL.revokeObjectURL(downloadUrl);
+          setNotice('Exported ' + exportFormat.toUpperCase() + '.');
+        },
+        mimeType,
+        0.92,
+      );
+    } catch {
+      setNotice(
+        'This image link does not allow browser export. Try another image link.',
+      );
+    }
   }
 
-  const selectedWatermark =
-    watermarkOptions.find((option) => option.id === selectedWatermarkId) ??
-    watermarkOptions[0];
-  const normalizedWatermarkSearch = watermarkSearch.trim().toLowerCase();
-  const filteredWatermarkOptions = normalizedWatermarkSearch
-    ? watermarkOptions.filter((option) =>
-        `${option.provider}/${option.watermark} ${option.hint}`
-          .toLowerCase()
-          .includes(normalizedWatermarkSearch),
-      )
-    : watermarkOptions;
+  function openAddWatermarkDialog() {
+    setIsWatermarkMenuOpen(false);
+    setNewProviderId(providerConfigs[0]?.id ?? newProviderValue);
+    setNewProviderName('');
+    setNewWatermarkLabel('');
+    setNewWatermarkType('text');
+    setNewWatermarkText('');
+    setNewWatermarkImage('');
+    setAddWatermarkError(null);
+    setIsAddWatermarkOpen(true);
+  }
+
+  function closeAddWatermarkDialog() {
+    setIsAddWatermarkOpen(false);
+    setAddWatermarkError(null);
+  }
+
+  function handleAddWatermark(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const label = newWatermarkLabel.trim();
+    if (!label) {
+      setAddWatermarkError('Give this watermark a name.');
+      return;
+    }
+
+    const isNewProvider = newProviderId === newProviderValue;
+    const selectedProviderConfig = providerConfigs.find(
+      (provider) => provider.id === newProviderId,
+    );
+    const providerName = isNewProvider
+      ? newProviderName.trim()
+      : selectedProviderConfig?.name ?? '';
+
+    if (!providerName) {
+      setAddWatermarkError('Give the new provider a name.');
+      return;
+    }
+
+    const value =
+      newWatermarkType === 'text'
+        ? newWatermarkText.trim()
+        : newWatermarkImage.trim();
+
+    if (!value) {
+      setAddWatermarkError(
+        newWatermarkType === 'text'
+          ? 'Add the text people should see.'
+          : 'Add an image link.',
+      );
+      return;
+    }
+
+    if (newWatermarkType === 'image' && !isImageReference(value)) {
+      setAddWatermarkError('Use an http, https, or site-relative image link.');
+      return;
+    }
+
+    const providerId = isNewProvider
+      ? uniqueId(
+          slugify(providerName, 'provider'),
+          new Set(providerConfigs.map((provider) => provider.id)),
+        )
+      : newProviderId;
+    const watermarkId = uniqueId(
+      slugify(label, 'watermark'),
+      new Set(selectedProviderConfig?.watermarks.map((watermark) => watermark.id)),
+    );
+    const newPreset: WatermarkPreset = {
+      id: watermarkId,
+      label,
+      type: newWatermarkType,
+      hint: newWatermarkType === 'text' ? 'Plain text' : 'Image link',
+      ...(newWatermarkType === 'text' ? { text: value } : { image: value }),
+    };
+
+    const didSave = updateProviderConfigs((currentProviders) => {
+      if (isNewProvider) {
+        return [
+          ...currentProviders,
+          { id: providerId, name: providerName, watermarks: [newPreset] },
+        ];
+      }
+
+      return currentProviders.map((provider) =>
+        provider.id === providerId
+          ? {
+              ...provider,
+              watermarks: [...provider.watermarks, newPreset],
+            }
+          : provider,
+      );
+    });
+    if (!didSave) {
+      return;
+    }
+
+    setSelectedWatermarkId(`${providerId}/${watermarkId}`);
+    setWatermarkText(
+      newWatermarkType === 'text' ? value : label.toUpperCase(),
+    );
+    setWatermarkSearch('');
+    setHighlightedWatermarkIndex(0);
+    setIsAddWatermarkOpen(false);
+    setAddWatermarkError(null);
+    setNotice(`Added ${providerName} / ${label}.`);
+  }
 
   function chooseWatermarkOption(option: WatermarkOption) {
     setSelectedWatermarkId(option.id);
-    setWatermarkText(option.text);
+    setWatermarkText(
+      option.type === 'text' ? option.text : option.watermark.toUpperCase(),
+    );
     setWatermarkSearch('');
     setHighlightedWatermarkIndex(0);
     setIsWatermarkMenuOpen(false);
@@ -645,7 +1029,6 @@ export default function Home() {
                 <span className="section-label">Watermark</span>
                 <span className="section-helper">Provider / treatment</span>
               </div>
-              <span className="character-count">{watermarkText.length}/32</span>
             </div>
 
             <div className="watermark-picker" ref={watermarkPickerRef}>
@@ -696,7 +1079,7 @@ export default function Home() {
                       aria-expanded="true"
                       aria-activedescendant={
                         filteredWatermarkOptions[highlightedWatermarkIndex]
-                          ? `watermark-option-${filteredWatermarkOptions[highlightedWatermarkIndex].id.replace('/', '-')}`
+                          ? `watermark-option-${optionDomId(filteredWatermarkOptions[highlightedWatermarkIndex].id)}`
                           : undefined
                       }
                       placeholder="Search options"
@@ -725,7 +1108,7 @@ export default function Home() {
                                 ? 'watermark-option is-highlighted'
                                 : 'watermark-option'
                           }
-                          id={`watermark-option-${option.id.replace('/', '-')}`}
+                          id={`watermark-option-${optionDomId(option.id)}`}
                           key={option.id}
                           type="button"
                           role="option"
@@ -750,23 +1133,23 @@ export default function Home() {
                       <p className="watermark-empty">No watermark matches that search.</p>
                     )}
                   </div>
+                  <div className="watermark-menu__footer">
+                    <button
+                      className="add-watermark-button"
+                      type="button"
+                      aria-haspopup="dialog"
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        openAddWatermarkDialog();
+                      }}
+                      onClick={openAddWatermarkDialog}
+                    >
+                      <span aria-hidden="true">＋</span>
+                      Add watermark
+                    </button>
+                  </div>
                 </div>
               ) : null}
-            </div>
-
-            <label className="field-kicker" htmlFor="watermark-text">
-              Visible copy
-            </label>
-            <div className="text-input-wrap">
-              <input
-                id="watermark-text"
-                type="text"
-                maxLength={32}
-                value={watermarkText}
-                onChange={(event) => setWatermarkText(event.target.value)}
-                placeholder="AI GENERATED"
-              />
-              <span aria-hidden="true">↗</span>
             </div>
           </div>
 
@@ -990,6 +1373,193 @@ export default function Home() {
         <span>GrokMark / a small tool for clearer sharing</span>
         <span>Built for the browser, ready for Vercel</span>
       </footer>
+
+      {isAddWatermarkOpen ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              closeAddWatermarkDialog();
+            }
+          }}
+        >
+          <section
+            className="watermark-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-watermark-title"
+          >
+            <div className="dialog-heading">
+              <div>
+                <p className="panel-label">New preset</p>
+                <h2 id="add-watermark-title">Add a watermark</h2>
+              </div>
+              <button
+                className="dialog-close"
+                type="button"
+                aria-label="Close add watermark dialog"
+                onClick={closeAddWatermarkDialog}
+              >
+                ×
+              </button>
+            </div>
+            <p className="dialog-copy">
+              Add a text label or an image link to an existing provider, or start a new one.
+            </p>
+
+            <form className="watermark-form" onSubmit={handleAddWatermark}>
+              <label className="dialog-field" htmlFor="new-watermark-provider">
+                <span>Provider</span>
+                <select
+                  ref={addWatermarkProviderRef}
+                  id="new-watermark-provider"
+                  value={newProviderId}
+                  onChange={(event) => {
+                    setNewProviderId(event.target.value);
+                    setAddWatermarkError(null);
+                  }}
+                >
+                  {providerConfigs.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.name}
+                    </option>
+                  ))}
+                  <option value={newProviderValue}>New provider</option>
+                </select>
+              </label>
+
+              {newProviderId === newProviderValue ? (
+                <label className="dialog-field" htmlFor="new-provider-name">
+                  <span>New provider name</span>
+                  <input
+                    id="new-provider-name"
+                    type="text"
+                    maxLength={32}
+                    value={newProviderName}
+                    onChange={(event) => {
+                      setNewProviderName(event.target.value);
+                      setAddWatermarkError(null);
+                    }}
+                    placeholder="Your provider"
+                  />
+                </label>
+              ) : null}
+
+              <label className="dialog-field" htmlFor="new-watermark-label">
+                <span>Watermark name</span>
+                <input
+                  ref={addWatermarkLabelRef}
+                  id="new-watermark-label"
+                  type="text"
+                  maxLength={24}
+                  value={newWatermarkLabel}
+                  onChange={(event) => {
+                    setNewWatermarkLabel(event.target.value);
+                    setAddWatermarkError(null);
+                  }}
+                  placeholder="name, badge, or image"
+                />
+              </label>
+
+              <fieldset className="dialog-field dialog-type-field">
+                <legend>Watermark type</legend>
+                <div className="type-toggle">
+                  <button
+                    className={
+                      newWatermarkType === 'text'
+                        ? 'type-toggle__button is-selected'
+                        : 'type-toggle__button'
+                    }
+                    type="button"
+                    aria-pressed={newWatermarkType === 'text'}
+                    onClick={() => {
+                      setNewWatermarkType('text');
+                      setAddWatermarkError(null);
+                    }}
+                  >
+                    Plain text
+                  </button>
+                  <button
+                    className={
+                      newWatermarkType === 'image'
+                        ? 'type-toggle__button is-selected'
+                        : 'type-toggle__button'
+                    }
+                    type="button"
+                    aria-pressed={newWatermarkType === 'image'}
+                    onClick={() => {
+                      setNewWatermarkType('image');
+                      setAddWatermarkError(null);
+                    }}
+                  >
+                    Image link
+                  </button>
+                </div>
+              </fieldset>
+
+              {newWatermarkType === 'text' ? (
+                <label className="dialog-field" htmlFor="new-watermark-text">
+                  <span>Text shown on the image</span>
+                  <input
+                    id="new-watermark-text"
+                    type="text"
+                    maxLength={maxWatermarkTextLength}
+                    value={newWatermarkText}
+                    onChange={(event) => {
+                      setNewWatermarkText(event.target.value);
+                      setAddWatermarkError(null);
+                    }}
+                    placeholder="MADE WITH YOUR PROVIDER"
+                  />
+                </label>
+              ) : (
+                <label className="dialog-field" htmlFor="new-watermark-image">
+                  <span>Image URL</span>
+                  <input
+                    id="new-watermark-image"
+                    type="text"
+                    inputMode="url"
+                    value={newWatermarkImage}
+                    onChange={(event) => {
+                      setNewWatermarkImage(event.target.value);
+                      setAddWatermarkError(null);
+                    }}
+                    placeholder="https://example.com/watermark.svg"
+                  />
+                  {isImageReference(newWatermarkImage.trim()) ? (
+                    <span className="dialog-image-preview">
+                      {/* User-provided image links cannot use Next's fixed image loader. */}
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={newWatermarkImage.trim()} alt="" />
+                      Image preview
+                    </span>
+                  ) : null}
+                </label>
+              )}
+
+              {addWatermarkError ? (
+                <p className="dialog-error" role="alert">
+                  {addWatermarkError}
+                </p>
+              ) : null}
+
+              <div className="dialog-actions">
+                <button
+                  className="quiet-button"
+                  type="button"
+                  onClick={closeAddWatermarkDialog}
+                >
+                  Cancel
+                </button>
+                <button className="dialog-submit" type="submit">
+                  Add + select
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

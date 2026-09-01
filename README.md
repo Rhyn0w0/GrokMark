@@ -7,7 +7,13 @@ GrokMark is a small browser-local editor for adding clear AI labels to photos, i
 - Drop or select a PNG, JPG, or WEBP image.
 - Try the built-in sample illustration without selecting a file.
 - Change the label, position, opacity, size, ink color, and frosted backing.
+- Choose text or image-link presets for Grok, ChatGPT, and Gemini.
+- Add providers and watermark presets. The additions stay in local storage.
 - Download a marked PNG or JPG.
+
+## Watermark presets
+
+The default provider and watermark list lives in [config/watermarks.json](config/watermarks.json). Text presets use a `text` value. Image presets use an `image` link. New presets added in the editor are stored in the browser and do not change the defaults in the repository.
 
 ## Framework choice
 
