@@ -14,10 +14,10 @@
         },
         {
           "id": "image",
-          "label": "image",
+          "label": "official mark",
           "type": "image",
           "image": "/provider-icons/grok.svg",
-          "hint": "Provider image"
+          "hint": "Official Grok mark"
         }
       ]
     },
@@ -34,10 +34,10 @@
         },
         {
           "id": "image",
-          "label": "image",
+          "label": "official mark",
           "type": "image",
           "image": "/provider-icons/chatgpt.svg",
-          "hint": "Provider image"
+          "hint": "Official OpenAI mark"
         }
       ]
     },
@@ -54,10 +54,10 @@
         },
         {
           "id": "image",
-          "label": "image",
+          "label": "official mark",
           "type": "image",
           "image": "/provider-icons/gemini.svg",
-          "hint": "Provider image"
+          "hint": "Official Gemini mark"
         }
       ]
     }
