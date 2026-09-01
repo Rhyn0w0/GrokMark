@@ -526,7 +526,7 @@ export default function Home() {
         x = (width - markWidth) / 2;
       }
 
-      if (position.startsWith('middle')) {
+      if (position === 'center' || position.startsWith('middle')) {
         y = (height - markHeight) / 2;
       } else if (position.startsWith('bottom')) {
         y = height - margin - markHeight;
