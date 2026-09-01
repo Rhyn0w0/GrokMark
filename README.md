@@ -13,7 +13,7 @@ GrokMark is a small browser-local editor for adding clear AI labels to photos, i
 
 ## Watermark presets
 
-The default provider and watermark list lives in [config/watermarks.json](config/watermarks.json). Text presets use a `text` value. Image presets use an `image` link. New presets added in the editor are stored in the browser and do not change the defaults in the repository.
+The default provider and watermark list lives in [config/watermarks.json](config/watermarks.json). Text presets use a `text` value. Image presets use an `image` link. The built-in image presets are bundled copies of the providers' marks, sourced from [Grok](https://grok.com), [OpenAI](https://github.com/openai/openai-agents-python/blob/main/docs/assets/logo.svg), and [Google AI](https://ai.google/products/). New presets added in the editor are stored in the browser and do not change the defaults in the repository.
 
 ## Framework choice
 
