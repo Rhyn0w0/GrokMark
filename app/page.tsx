@@ -61,6 +61,12 @@ const watermarkStorageKey = 'grokmark-watermark-config';
 const watermarkConfigChangeEvent = 'grokmark-watermark-config-change';
 const newProviderValue = '__new_provider__';
 const maxWatermarkTextLength = 32;
+const minWatermarkScale = 0.1;
+const maxWatermarkScale = 90;
+const sizeSliderMin = 0;
+const sizeSliderMax = 100;
+const sizeSliderStep = 0.1;
+const defaultWatermarkScale = 10;
 const defaultProviders = defaultWatermarkConfig.providers as ProviderConfig[];
 
 function flattenWatermarkConfig(providers: ProviderConfig[]) {
@@ -231,6 +237,32 @@ function rangeFill(value: number, minimum: number, maximum: number) {
   return ((value - minimum) / (maximum - minimum)) * 100 + '%';
 }
 
+function scaleFromSliderPosition(position: number) {
+  const normalizedPosition =
+    (clamp(position, sizeSliderMin, sizeSliderMax) - sizeSliderMin) /
+    (sizeSliderMax - sizeSliderMin);
+
+  return (
+    minWatermarkScale *
+    Math.pow(maxWatermarkScale / minWatermarkScale, normalizedPosition)
+  );
+}
+
+function sliderPositionFromScale(value: number) {
+  const normalizedScale =
+    Math.log(clamp(value, minWatermarkScale, maxWatermarkScale) / minWatermarkScale) /
+    Math.log(maxWatermarkScale / minWatermarkScale);
+
+  return (
+    sizeSliderMin +
+    normalizedScale * (sizeSliderMax - sizeSliderMin)
+  );
+}
+
+function formatWatermarkScale(value: number) {
+  return (value < 10 ? value.toFixed(1) : Math.round(value)) + '%';
+}
+
 function brightnessColor(value: number) {
   const channel = Math.round((clamp(value, 0, 100) / 100) * 255);
   return `rgb(${channel}, ${channel}, ${channel})`;
@@ -378,7 +410,7 @@ export default function Home() {
   const [addWatermarkError, setAddWatermarkError] = useState<string | null>(null);
   const [position, setPosition] = useState<Position>('bottom-right');
   const [opacity, setOpacity] = useState(50);
-  const [scale, setScale] = useState(100);
+  const [scale, setScale] = useState(defaultWatermarkScale);
   const [brightness, setBrightness] = useState(100);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png');
   const [isDragging, setIsDragging] = useState(false);
@@ -473,13 +505,15 @@ export default function Home() {
       context.drawImage(sourceImage, 0, 0, width, height);
 
       const shortestEdge = Math.min(width, height);
-      const margin = Math.max(20, shortestEdge * 0.045);
-      const maxMarkWidth = Math.max(90, width - margin * 2);
-      let markWidth = maxMarkWidth;
+      const margin = Math.min(Math.max(20, shortestEdge * 0.045), shortestEdge * 0.45);
+      const maxMarkWidth = Math.max(0.01, width - margin * 2);
+      const maxMarkHeight = Math.max(0.01, height - margin * 2);
+      const targetMarkWidth = Math.min(width * (scale / 100), maxMarkWidth);
+      let markWidth = targetMarkWidth;
       let markHeight = 0;
       let paddingX = 0;
       let paddingY = 0;
-      let fontSize = clamp(shortestEdge * 0.044 * (scale / 100), 18, 104);
+      let fontSize = 0;
       let label = '';
       let imageWidth = 0;
       let imageHeight = 0;
@@ -487,29 +521,28 @@ export default function Home() {
       if (selectedWatermark.type === 'image') {
         const sourceWidth = watermarkImage?.naturalWidth || 1;
         const sourceHeight = watermarkImage?.naturalHeight || 1;
-        const maxImageSize = clamp(shortestEdge * 0.18 * (scale / 100), 48, 240);
-        const maxImageDimension = Math.max(28, Math.min(maxImageSize, maxMarkWidth * 0.68));
+        const imagePaddingRatio = 0.18;
+        const outerSourceWidth = sourceWidth * (1 + imagePaddingRatio * 2);
+        const outerSourceHeight = sourceHeight * (1 + imagePaddingRatio * 2);
         const imageScale = Math.min(
-          maxImageDimension / sourceWidth,
-          maxImageDimension / sourceHeight,
+          targetMarkWidth / outerSourceWidth,
+          maxMarkHeight / outerSourceHeight,
         );
-        imageWidth = Math.max(1, sourceWidth * imageScale);
-        imageHeight = Math.max(1, sourceHeight * imageScale);
-        paddingX = Math.max(12, imageWidth * 0.18);
-        paddingY = Math.max(10, imageHeight * 0.18);
+        imageWidth = sourceWidth * imageScale;
+        imageHeight = sourceHeight * imageScale;
+        paddingX = imageWidth * imagePaddingRatio;
+        paddingY = imageHeight * imagePaddingRatio;
         markWidth = Math.min(maxMarkWidth, imageWidth + paddingX * 2);
         markHeight = imageHeight + paddingY * 2;
       } else {
         label = (watermarkText.trim() || selectedWatermark.text || 'AI GENERATED').toUpperCase();
+        context.font = '700 1px Arial, sans-serif';
+        const textWidthAtUnitSize = context.measureText(label).width;
+        const widthBasedFontSize = targetMarkWidth / (textWidthAtUnitSize + 1.8);
+        const heightBasedFontSize = maxMarkHeight / 2.2;
+        fontSize = Math.min(widthBasedFontSize, heightBasedFontSize);
         context.font = '700 ' + fontSize + 'px Arial, sans-serif';
-        let textWidth = context.measureText(label).width;
-        const requestedMarkWidth = textWidth + fontSize * 1.8;
-
-        if (requestedMarkWidth > maxMarkWidth) {
-          fontSize = Math.max(12, fontSize * (maxMarkWidth / requestedMarkWidth));
-          context.font = '700 ' + fontSize + 'px Arial, sans-serif';
-          textWidth = context.measureText(label).width;
-        }
+        const textWidth = context.measureText(label).width;
 
         paddingX = fontSize * 0.9;
         paddingY = fontSize * 0.6;
@@ -545,7 +578,13 @@ export default function Home() {
         );
 
         if (tintedWatermark) {
-          context.drawImage(tintedWatermark, x + paddingX, y + paddingY);
+          context.drawImage(
+            tintedWatermark,
+            x + paddingX,
+            y + paddingY,
+            imageWidth,
+            imageHeight,
+          );
         }
       } else {
         context.fillStyle = watermarkColor;
@@ -888,6 +927,7 @@ export default function Home() {
     }
   }
 
+  const sizeSliderValue = sliderPositionFromScale(scale);
   const displaySize = imageSize
     ? imageSize.width + ' × ' + imageSize.height
     : 'Waiting for an image';
@@ -1168,20 +1208,34 @@ export default function Home() {
                 <label className="section-label" htmlFor="scale">
                   Size
                 </label>
-                <output htmlFor="scale">{scale}%</output>
+                <output htmlFor="scale">
+                  {formatWatermarkScale(scale)} of image width
+                </output>
               </div>
               <input
                 id="scale"
                 type="range"
-                min="70"
-                max="150"
-                value={scale}
+                min={sizeSliderMin}
+                max={sizeSliderMax}
+                step={sizeSliderStep}
+                value={sizeSliderValue}
+                aria-label="Watermark size relative to image width"
+                aria-valuemin={minWatermarkScale}
+                aria-valuemax={maxWatermarkScale}
+                aria-valuenow={scale}
+                aria-valuetext={formatWatermarkScale(scale) + ' of image width'}
                 style={
                   {
-                    '--range-fill': rangeFill(scale, 70, 150),
+                    '--range-fill': rangeFill(
+                      sizeSliderValue,
+                      sizeSliderMin,
+                      sizeSliderMax,
+                    ),
                   } as CSSProperties
                 }
-                onChange={(event) => setScale(Number(event.target.value))}
+                onChange={(event) =>
+                  setScale(scaleFromSliderPosition(Number(event.target.value)))
+                }
               />
             </div>
             <div className="range-control">
