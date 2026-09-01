@@ -1372,6 +1372,14 @@ export default function Home() {
       <footer className="site-footer">
         <span>GrokMark / a small tool for clearer sharing</span>
         <span>Built for the browser, ready for Vercel</span>
+        <a
+          className="site-footer__link"
+          href="https://github.com/Rhyn0w0/GrokMark"
+          target="_blank"
+          rel="noreferrer"
+        >
+          View on GitHub <span aria-hidden="true">↗</span>
+        </a>
       </footer>
 
       {isAddWatermarkOpen ? (
