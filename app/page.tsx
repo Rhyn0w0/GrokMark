@@ -1,6 +1,6 @@
 'use client';
 
-import type { CSSProperties, ChangeEvent, DragEvent } from 'react';
+import type { CSSProperties, ChangeEvent, DragEvent, KeyboardEvent } from 'react';
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 
@@ -18,7 +18,86 @@ type Position =
 type Ink = 'white' | 'black' | 'lime';
 type ExportFormat = 'png' | 'jpg';
 
-const markPresets = ['AI GENERATED', 'MADE WITH GROK', 'AI ASSISTED'];
+type WatermarkOption = {
+  id: string;
+  provider: string;
+  watermark: string;
+  text: string;
+  hint: string;
+};
+
+const watermarkOptions: WatermarkOption[] = [
+  {
+    id: 'grok/name',
+    provider: 'grok',
+    watermark: 'name',
+    text: 'MADE WITH GROK',
+    hint: 'Provider name',
+  },
+  {
+    id: 'grok/logo',
+    provider: 'grok',
+    watermark: 'logo',
+    text: 'GROK',
+    hint: 'Provider logo label',
+  },
+  {
+    id: 'gemini/name',
+    provider: 'gemini',
+    watermark: 'name',
+    text: 'MADE WITH GEMINI',
+    hint: 'Provider name',
+  },
+  {
+    id: 'gemini/logo',
+    provider: 'gemini',
+    watermark: 'logo',
+    text: 'GEMINI',
+    hint: 'Provider logo label',
+  },
+  {
+    id: 'chatgpt/name',
+    provider: 'chatgpt',
+    watermark: 'name',
+    text: 'MADE WITH CHATGPT',
+    hint: 'Provider name',
+  },
+  {
+    id: 'chatgpt/logo',
+    provider: 'chatgpt',
+    watermark: 'logo',
+    text: 'CHATGPT',
+    hint: 'Provider logo label',
+  },
+  {
+    id: 'midjourney/name',
+    provider: 'midjourney',
+    watermark: 'name',
+    text: 'MADE WITH MIDJOURNEY',
+    hint: 'Provider name',
+  },
+  {
+    id: 'midjourney/logo',
+    provider: 'midjourney',
+    watermark: 'logo',
+    text: 'MIDJOURNEY',
+    hint: 'Provider logo label',
+  },
+  {
+    id: 'custom/text',
+    provider: 'custom',
+    watermark: 'text',
+    text: 'AI GENERATED',
+    hint: 'Write your own copy',
+  },
+  {
+    id: 'custom/image',
+    provider: 'custom',
+    watermark: 'image',
+    text: 'CUSTOM IMAGE',
+    hint: 'Use a custom image label',
+  },
+];
 
 const positionOptions: Array<{
   id: Position;
@@ -158,6 +237,8 @@ function createDemoImage() {
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const watermarkPickerRef = useRef<HTMLDivElement>(null);
+  const watermarkSearchRef = useRef<HTMLInputElement>(null);
 
   const [imageSource, setImageSource] = useState<string | null>(null);
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(
@@ -165,7 +246,11 @@ export default function Home() {
   );
   const [sourceLabel, setSourceLabel] = useState('No image loaded');
   const [fileName, setFileName] = useState('grokmark-export');
-  const [watermarkText, setWatermarkText] = useState('AI GENERATED');
+  const [selectedWatermarkId, setSelectedWatermarkId] = useState('grok/name');
+  const [watermarkSearch, setWatermarkSearch] = useState('');
+  const [isWatermarkMenuOpen, setIsWatermarkMenuOpen] = useState(false);
+  const [highlightedWatermarkIndex, setHighlightedWatermarkIndex] = useState(0);
+  const [watermarkText, setWatermarkText] = useState('MADE WITH GROK');
   const [position, setPosition] = useState<Position>('bottom-right');
   const [opacity, setOpacity] = useState(82);
   const [scale, setScale] = useState(100);
@@ -289,6 +374,37 @@ export default function Home() {
     };
   }, [frosted, imageSource, ink, opacity, position, scale, watermarkText]);
 
+  useEffect(() => {
+    if (!isWatermarkMenuOpen) {
+      return;
+    }
+
+    watermarkSearchRef.current?.focus();
+
+    function closeOnOutsideClick(event: PointerEvent) {
+      if (
+        watermarkPickerRef.current &&
+        !watermarkPickerRef.current.contains(event.target as Node)
+      ) {
+        setIsWatermarkMenuOpen(false);
+      }
+    }
+
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setIsWatermarkMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isWatermarkMenuOpen]);
+
   function acceptImage(file: File) {
     if (!file.type.startsWith('image/')) {
       setNotice('Choose an image file to get started.');
@@ -379,6 +495,50 @@ export default function Home() {
     );
   }
 
+  const selectedWatermark =
+    watermarkOptions.find((option) => option.id === selectedWatermarkId) ??
+    watermarkOptions[0];
+  const normalizedWatermarkSearch = watermarkSearch.trim().toLowerCase();
+  const filteredWatermarkOptions = normalizedWatermarkSearch
+    ? watermarkOptions.filter((option) =>
+        `${option.provider}/${option.watermark} ${option.hint}`
+          .toLowerCase()
+          .includes(normalizedWatermarkSearch),
+      )
+    : watermarkOptions;
+
+  function chooseWatermarkOption(option: WatermarkOption) {
+    setSelectedWatermarkId(option.id);
+    setWatermarkText(option.text);
+    setWatermarkSearch('');
+    setHighlightedWatermarkIndex(0);
+    setIsWatermarkMenuOpen(false);
+  }
+
+  function handleWatermarkSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setHighlightedWatermarkIndex((current) =>
+        Math.min(current + 1, Math.max(filteredWatermarkOptions.length - 1, 0)),
+      );
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setHighlightedWatermarkIndex((current) => Math.max(current - 1, 0));
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const option = filteredWatermarkOptions[highlightedWatermarkIndex];
+      if (option) {
+        chooseWatermarkOption(option);
+      }
+    }
+  }
+
   const displaySize = imageSize
     ? imageSize.width + ' × ' + imageSize.height
     : 'Waiting for an image';
@@ -388,7 +548,7 @@ export default function Home() {
       <header className="topbar">
         <Link className="brand" href="/" aria-label="GrokMark home">
           <span className="brand-symbol" aria-hidden="true">
-            ✦
+            𝕏
           </span>
           <span>GrokMark</span>
         </Link>
@@ -479,13 +639,124 @@ export default function Home() {
             </button>
           </div>
 
-          <div className="control-section">
+          <div className="control-section watermark-section">
             <div className="section-heading">
-              <label className="section-label" htmlFor="watermark-text">
-                Mark text
-              </label>
+              <div className="section-heading__stack">
+                <span className="section-label">Watermark</span>
+                <span className="section-helper">Provider / treatment</span>
+              </div>
               <span className="character-count">{watermarkText.length}/32</span>
             </div>
+
+            <div className="watermark-picker" ref={watermarkPickerRef}>
+              <button
+                className={
+                  isWatermarkMenuOpen
+                    ? 'watermark-trigger is-open'
+                    : 'watermark-trigger'
+                }
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded={isWatermarkMenuOpen}
+                aria-label="Choose a watermark"
+                onClick={() => {
+                  setIsWatermarkMenuOpen((current) => !current);
+                  setWatermarkSearch('');
+                  setHighlightedWatermarkIndex(
+                    Math.max(
+                      watermarkOptions.findIndex(
+                        (option) => option.id === selectedWatermarkId,
+                      ),
+                      0,
+                    ),
+                  );
+                }}
+              >
+                <span className="watermark-trigger__value">
+                  <span className="watermark-token">{selectedWatermark.provider}</span>
+                  <span className="watermark-slash">/</span>
+                  <span>{selectedWatermark.watermark}</span>
+                </span>
+                <span className="watermark-trigger__hint">{selectedWatermark.hint}</span>
+                <span className="watermark-trigger__chevron" aria-hidden="true">
+                  ⌄
+                </span>
+              </button>
+
+              {isWatermarkMenuOpen ? (
+                <div className="watermark-menu">
+                  <div className="watermark-search-wrap">
+                    <span aria-hidden="true">⌕</span>
+                    <input
+                      ref={watermarkSearchRef}
+                      type="search"
+                      role="combobox"
+                      aria-label="Search watermark options"
+                      aria-controls="watermark-options"
+                      aria-expanded="true"
+                      aria-activedescendant={
+                        filteredWatermarkOptions[highlightedWatermarkIndex]
+                          ? `watermark-option-${filteredWatermarkOptions[highlightedWatermarkIndex].id.replace('/', '-')}`
+                          : undefined
+                      }
+                      placeholder="Search options"
+                      value={watermarkSearch}
+                      onChange={(event) => {
+                        setWatermarkSearch(event.target.value);
+                        setHighlightedWatermarkIndex(0);
+                      }}
+                      onKeyDown={handleWatermarkSearchKeyDown}
+                    />
+                  </div>
+
+                  <div
+                    className="watermark-options"
+                    id="watermark-options"
+                    role="listbox"
+                    aria-label="Watermark options"
+                  >
+                    {filteredWatermarkOptions.length ? (
+                      filteredWatermarkOptions.map((option, index) => (
+                        <button
+                          className={
+                            option.id === selectedWatermarkId
+                              ? 'watermark-option is-selected'
+                              : index === highlightedWatermarkIndex
+                                ? 'watermark-option is-highlighted'
+                                : 'watermark-option'
+                          }
+                          id={`watermark-option-${option.id.replace('/', '-')}`}
+                          key={option.id}
+                          type="button"
+                          role="option"
+                          aria-selected={option.id === selectedWatermarkId}
+                          onMouseEnter={() => setHighlightedWatermarkIndex(index)}
+                          onClick={() => chooseWatermarkOption(option)}
+                        >
+                          <span className="watermark-option__label">
+                            <span className="watermark-token">{option.provider}</span>
+                            <span className="watermark-slash">/</span>
+                            <span>{option.watermark}</span>
+                          </span>
+                          <span className="watermark-option__hint">{option.hint}</span>
+                          {option.id === selectedWatermarkId ? (
+                            <span className="watermark-option__check" aria-hidden="true">
+                              ✓
+                            </span>
+                          ) : null}
+                        </button>
+                      ))
+                    ) : (
+                      <p className="watermark-empty">No watermark matches that search.</p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <label className="field-kicker" htmlFor="watermark-text">
+              Visible copy
+            </label>
             <div className="text-input-wrap">
               <input
                 id="watermark-text"
@@ -496,19 +767,6 @@ export default function Home() {
                 placeholder="AI GENERATED"
               />
               <span aria-hidden="true">↗</span>
-            </div>
-            <div className="preset-list" aria-label="Watermark presets">
-              {markPresets.map((preset) => (
-                <button
-                  className={watermarkText === preset ? 'preset is-selected' : 'preset'}
-                  type="button"
-                  key={preset}
-                  onClick={() => setWatermarkText(preset)}
-                  aria-pressed={watermarkText === preset}
-                >
-                  {preset}
-                </button>
-              ))}
             </div>
           </div>
 
@@ -719,7 +977,7 @@ export default function Home() {
         <div>
           <span className="step-number">B</span>
           <strong>Make the mark yours.</strong>
-          <span>Use a preset or type the label people need to see.</span>
+          <span>Choose a provider mark or write the label people need to see.</span>
         </div>
         <div>
           <span className="step-number">C</span>
