@@ -59,7 +59,9 @@ const maxWatermarkScale = 90;
 const sizeSliderMin = 0;
 const sizeSliderMax = 100;
 const sizeSliderStep = 0.1;
+const sizeSliderCenter = 50;
 const defaultWatermarkScale = 15;
+const watermarkScaleCenter = 15;
 const defaultProviders = defaultWatermarkConfig.providers as ProviderConfig[];
 
 function flattenWatermarkConfig(providers: ProviderConfig[]) {
@@ -234,24 +236,53 @@ function rangeFill(value: number, minimum: number, maximum: number) {
 }
 
 function scaleFromSliderPosition(position: number) {
+  const clampedPosition = clamp(position, sizeSliderMin, sizeSliderMax);
+
+  if (clampedPosition <= sizeSliderCenter) {
+    const normalizedPosition =
+      (clampedPosition - sizeSliderMin) /
+      (sizeSliderCenter - sizeSliderMin);
+
+    return (
+      minWatermarkScale *
+      Math.pow(
+        watermarkScaleCenter / minWatermarkScale,
+        normalizedPosition,
+      )
+    );
+  }
+
   const normalizedPosition =
-    (clamp(position, sizeSliderMin, sizeSliderMax) - sizeSliderMin) /
-    (sizeSliderMax - sizeSliderMin);
+    (clampedPosition - sizeSliderCenter) /
+    (sizeSliderMax - sizeSliderCenter);
 
   return (
-    minWatermarkScale *
-    Math.pow(maxWatermarkScale / minWatermarkScale, normalizedPosition)
+    watermarkScaleCenter *
+    Math.pow(maxWatermarkScale / watermarkScaleCenter, normalizedPosition)
   );
 }
 
 function sliderPositionFromScale(value: number) {
+  const clampedScale = clamp(value, minWatermarkScale, maxWatermarkScale);
+
+  if (clampedScale <= watermarkScaleCenter) {
+    const normalizedScale =
+      Math.log(clampedScale / minWatermarkScale) /
+      Math.log(watermarkScaleCenter / minWatermarkScale);
+
+    return (
+      sizeSliderMin +
+      normalizedScale * (sizeSliderCenter - sizeSliderMin)
+    );
+  }
+
   const normalizedScale =
-    Math.log(clamp(value, minWatermarkScale, maxWatermarkScale) / minWatermarkScale) /
-    Math.log(maxWatermarkScale / minWatermarkScale);
+    Math.log(clampedScale / watermarkScaleCenter) /
+    Math.log(maxWatermarkScale / watermarkScaleCenter);
 
   return (
-    sizeSliderMin +
-    normalizedScale * (sizeSliderMax - sizeSliderMin)
+    sizeSliderCenter +
+    normalizedScale * (sizeSliderMax - sizeSliderCenter)
   );
 }
 
