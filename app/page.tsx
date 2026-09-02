@@ -408,6 +408,8 @@ export default function Home() {
   const addWatermarkLabelRef = useRef<HTMLInputElement>(null);
   const activeCornerRef = useRef<CornerIndex | null>(null);
   const hasInteractedWithRegionRef = useRef(false);
+  const sourceImageRef = useRef<HTMLImageElement | null>(null);
+  const watermarkImageRef = useRef<HTMLImageElement | null>(null);
 
   const [imageSource, setImageSource] = useState<string | null>(null);
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(
@@ -454,6 +456,7 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [decodedImagesVersion, setDecodedImagesVersion] = useState(0);
 
   const watermarkOptions = flattenWatermarkConfig(providerConfigs);
   const selectedWatermark: WatermarkChoice =
@@ -642,94 +645,127 @@ export default function Home() {
   }
 
   useEffect(() => {
-    const canvas = canvasRef.current;
+    sourceImageRef.current = null;
 
-    if (!canvas || !imageSource) {
-      setCanvasReady(false);
+    if (!imageSource) {
       return;
     }
 
-    setCanvasReady(false);
-    const previewCanvas = canvas;
-    const sourceImage = new Image();
-    const watermarkImage =
-      selectedWatermarkType === 'image' ? new Image() : null;
-    let sourceReady = false;
-    let watermarkReady = watermarkImage === null;
     let isCancelled = false;
-
+    const sourceImage = new Image();
     sourceImage.decoding = 'async';
-    if (watermarkImage) {
-      watermarkImage.crossOrigin = 'anonymous';
-      watermarkImage.decoding = 'async';
-    }
-
-    function drawPreview() {
-      if (!sourceReady || !watermarkReady || isCancelled) {
-        return;
-      }
-
-      const context = previewCanvas.getContext('2d');
-      if (!context) {
-        setNotice('This browser could not create a canvas preview.');
-        return;
-      }
-
-      const result = drawWatermark({
-        canvas: previewCanvas,
-        sourceImage,
-        watermarkImage,
-        watermark: {
-          type: selectedWatermarkType,
-          text: selectedWatermarkText,
-          image: selectedWatermarkImage,
-        },
-        watermarkText,
-        opacity,
-        scale,
-        brightness,
-        region: region ?? undefined,
-      });
-      if (result) {
-        setImageSize(result);
-        setCanvasReady(true);
-      }
-    }
-
     sourceImage.onload = () => {
-      sourceReady = true;
-      drawPreview();
+      if (isCancelled) {
+        return;
+      }
+
+      sourceImageRef.current = sourceImage;
+      setDecodedImagesVersion((version) => version + 1);
     };
     sourceImage.onerror = () => {
+      if (isCancelled) {
+        return;
+      }
+
       setCanvasReady(false);
       setNotice('That image could not be read. Try a PNG, JPG, or WEBP file.');
     };
-
-    if (watermarkImage) {
-      watermarkImage.onload = () => {
-        watermarkReady = true;
-        drawPreview();
-      };
-      watermarkImage.onerror = () => {
-        setCanvasReady(false);
-        setNotice('That watermark image could not be loaded. Check its image link.');
-      };
-      watermarkImage.src = selectedWatermarkImage ?? '';
-    }
-
     sourceImage.src = imageSource;
 
     return () => {
       isCancelled = true;
       sourceImage.onload = null;
       sourceImage.onerror = null;
-      if (watermarkImage) {
-        watermarkImage.onload = null;
-        watermarkImage.onerror = null;
+      if (sourceImageRef.current === sourceImage) {
+        sourceImageRef.current = null;
       }
     };
+  }, [imageSource]);
+
+  useEffect(() => {
+    watermarkImageRef.current = null;
+
+    if (selectedWatermarkType !== 'image') {
+      return;
+    }
+
+    let isCancelled = false;
+    const watermarkImage = new Image();
+    watermarkImage.crossOrigin = 'anonymous';
+    watermarkImage.decoding = 'async';
+    watermarkImage.onload = () => {
+      if (isCancelled) {
+        return;
+      }
+
+      watermarkImageRef.current = watermarkImage;
+      setDecodedImagesVersion((version) => version + 1);
+    };
+    watermarkImage.onerror = () => {
+      if (isCancelled) {
+        return;
+      }
+
+      setCanvasReady(false);
+      setNotice('That watermark image could not be loaded. Check its image link.');
+    };
+    watermarkImage.src = selectedWatermarkImage ?? '';
+
+    return () => {
+      isCancelled = true;
+      watermarkImage.onload = null;
+      watermarkImage.onerror = null;
+      if (watermarkImageRef.current === watermarkImage) {
+        watermarkImageRef.current = null;
+      }
+    };
+  }, [selectedWatermarkImage, selectedWatermarkType]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const sourceImage = sourceImageRef.current;
+
+    if (!canvas || !imageSource || !sourceImage) {
+      return;
+    }
+
+    if (activeCorner !== null) {
+      return;
+    }
+
+    const watermarkImage = watermarkImageRef.current;
+    if (selectedWatermarkType === 'image' && !watermarkImage) {
+      return;
+    }
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      setNotice('This browser could not create a canvas preview.');
+      return;
+    }
+
+    const result = drawWatermark({
+      canvas,
+      sourceImage,
+      watermarkImage,
+      watermark: {
+        type: selectedWatermarkType,
+        text: selectedWatermarkText,
+        image: selectedWatermarkImage,
+      },
+      watermarkText,
+      opacity,
+      scale,
+      brightness,
+      region: region ?? undefined,
+    });
+    if (result) {
+      setImageSize(result);
+      setCanvasReady(true);
+    }
   }, [
     brightness,
+    decodedImagesVersion,
     imageSource,
     opacity,
     scale,
@@ -738,6 +774,7 @@ export default function Home() {
     selectedWatermarkText,
     selectedWatermarkType,
     region,
+    activeCorner,
     watermarkText,
   ]);
 
@@ -902,6 +939,7 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = () => {
       hasInteractedWithRegionRef.current = false;
+      setCanvasReady(false);
       setImageSource(String(reader.result));
       setImageSize(null);
       setRegion(null);
@@ -941,6 +979,7 @@ export default function Home() {
     }
 
     hasInteractedWithRegionRef.current = false;
+    setCanvasReady(false);
     setImageSource(demoImage);
     setImageSize(null);
     setRegion(null);
@@ -1100,6 +1139,9 @@ export default function Home() {
     }
 
     setSelectedWatermarkId(`${providerId}/${watermarkId}`);
+    if (newWatermarkType === 'image') {
+      setCanvasReady(false);
+    }
     setWatermarkText(
       newWatermarkType === 'text' ? value : label.toUpperCase(),
     );
@@ -1111,6 +1153,9 @@ export default function Home() {
   }
 
   function chooseWatermarkOption(option: WatermarkChoice) {
+    if (option.type === 'image') {
+      setCanvasReady(false);
+    }
     setSelectedWatermarkId(option.id);
     setWatermarkText(
       option.type === 'text' ? option.text : option.watermark.toUpperCase(),
