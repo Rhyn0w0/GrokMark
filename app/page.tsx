@@ -10,17 +10,13 @@ import type {
 import Link from 'next/link';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import defaultWatermarkConfig from '../config/watermarks.json';
+import {
+  drawWatermark,
+  type WatermarkDefinition,
+  type WatermarkPosition,
+} from './watermark';
 
-type Position =
-  | 'top-left'
-  | 'top-center'
-  | 'top-right'
-  | 'middle-left'
-  | 'center'
-  | 'middle-right'
-  | 'bottom-left'
-  | 'bottom-center'
-  | 'bottom-right';
+type Position = WatermarkPosition;
 
 type ExportFormat = 'png' | 'jpg';
 type WatermarkType = 'text' | 'image';
@@ -45,15 +41,12 @@ type WatermarkConfig = {
   providers: ProviderConfig[];
 };
 
-type WatermarkOption = {
+type WatermarkChoice = WatermarkDefinition & {
   id: string;
   providerId: string;
   provider: string;
   watermarkId: string;
   watermark: string;
-  type: WatermarkType;
-  text: string;
-  image?: string;
   hint: string;
 };
 
@@ -66,7 +59,7 @@ const maxWatermarkScale = 90;
 const sizeSliderMin = 0;
 const sizeSliderMax = 100;
 const sizeSliderStep = 0.1;
-const defaultWatermarkScale = 10;
+const defaultWatermarkScale = 15;
 const defaultProviders = defaultWatermarkConfig.providers as ProviderConfig[];
 
 function flattenWatermarkConfig(providers: ProviderConfig[]) {
@@ -89,7 +82,10 @@ function flattenWatermarkConfig(providers: ProviderConfig[]) {
 }
 
 const defaultWatermarkOptions = flattenWatermarkConfig(defaultProviders);
-const defaultSelectedWatermarkId = defaultWatermarkOptions[0]?.id ?? '';
+const defaultSelectedWatermarkId =
+  defaultWatermarkOptions.find((option) => option.id === 'grok/image')?.id ??
+  defaultWatermarkOptions[0]?.id ??
+  '';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -263,34 +259,6 @@ function formatWatermarkScale(value: number) {
   return (value < 10 ? value.toFixed(1) : Math.round(value)) + '%';
 }
 
-function brightnessColor(value: number) {
-  const channel = Math.round((clamp(value, 0, 100) / 100) * 255);
-  return `rgb(${channel}, ${channel}, ${channel})`;
-}
-
-function createTintedWatermark(
-  image: HTMLImageElement,
-  width: number,
-  height: number,
-  color: string,
-) {
-  const tintedCanvas = document.createElement('canvas');
-  tintedCanvas.width = Math.max(1, Math.ceil(width));
-  tintedCanvas.height = Math.max(1, Math.ceil(height));
-
-  const tintedContext = tintedCanvas.getContext('2d');
-  if (!tintedContext) {
-    return null;
-  }
-
-  tintedContext.drawImage(image, 0, 0, width, height);
-  tintedContext.globalCompositeOperation = 'source-in';
-  tintedContext.fillStyle = color;
-  tintedContext.fillRect(0, 0, tintedCanvas.width, tintedCanvas.height);
-
-  return tintedCanvas;
-}
-
 function createDemoImage() {
   const demoCanvas = document.createElement('canvas');
   demoCanvas.width = 1600;
@@ -418,7 +386,7 @@ export default function Home() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const watermarkOptions = flattenWatermarkConfig(providerConfigs);
-  const selectedWatermark =
+  const selectedWatermark: WatermarkChoice =
     watermarkOptions.find((option) => option.id === selectedWatermarkId) ??
     watermarkOptions[0] ??
     ({
@@ -430,7 +398,7 @@ export default function Home() {
       type: 'text',
       text: 'AI GENERATED',
       hint: 'Plain text',
-    } satisfies WatermarkOption);
+    } satisfies WatermarkChoice);
   const normalizedWatermarkSearch = watermarkSearch.trim().toLowerCase();
   const filteredWatermarkOptions = normalizedWatermarkSearch
     ? watermarkOptions.filter((option) =>
@@ -439,6 +407,9 @@ export default function Home() {
           .includes(normalizedWatermarkSearch),
       )
     : watermarkOptions;
+  const selectedWatermarkType = selectedWatermark.type;
+  const selectedWatermarkImage = selectedWatermark.image;
+  const selectedWatermarkText = selectedWatermark.text;
 
   function saveProviderConfigs(nextProviders: ProviderConfig[]) {
     try {
@@ -473,7 +444,7 @@ export default function Home() {
     const previewCanvas = canvas;
     const sourceImage = new Image();
     const watermarkImage =
-      selectedWatermark.type === 'image' ? new Image() : null;
+      selectedWatermarkType === 'image' ? new Image() : null;
     let sourceReady = false;
     let watermarkReady = watermarkImage === null;
     let isCancelled = false;
@@ -495,105 +466,25 @@ export default function Home() {
         return;
       }
 
-      const width = sourceImage.naturalWidth;
-      const height = sourceImage.naturalHeight;
-      previewCanvas.width = width;
-      previewCanvas.height = height;
-      setImageSize({ width, height });
-
-      context.clearRect(0, 0, width, height);
-      context.drawImage(sourceImage, 0, 0, width, height);
-
-      const shortestEdge = Math.min(width, height);
-      const margin = Math.min(Math.max(20, shortestEdge * 0.045), shortestEdge * 0.45);
-      const maxMarkWidth = Math.max(0.01, width - margin * 2);
-      const maxMarkHeight = Math.max(0.01, height - margin * 2);
-      const targetMarkWidth = Math.min(width * (scale / 100), maxMarkWidth);
-      let markWidth = targetMarkWidth;
-      let markHeight = 0;
-      let paddingX = 0;
-      let paddingY = 0;
-      let fontSize = 0;
-      let label = '';
-      let imageWidth = 0;
-      let imageHeight = 0;
-
-      if (selectedWatermark.type === 'image') {
-        const sourceWidth = watermarkImage?.naturalWidth || 1;
-        const sourceHeight = watermarkImage?.naturalHeight || 1;
-        const imagePaddingRatio = 0.18;
-        const outerSourceWidth = sourceWidth * (1 + imagePaddingRatio * 2);
-        const outerSourceHeight = sourceHeight * (1 + imagePaddingRatio * 2);
-        const imageScale = Math.min(
-          targetMarkWidth / outerSourceWidth,
-          maxMarkHeight / outerSourceHeight,
-        );
-        imageWidth = sourceWidth * imageScale;
-        imageHeight = sourceHeight * imageScale;
-        paddingX = imageWidth * imagePaddingRatio;
-        paddingY = imageHeight * imagePaddingRatio;
-        markWidth = Math.min(maxMarkWidth, imageWidth + paddingX * 2);
-        markHeight = imageHeight + paddingY * 2;
-      } else {
-        label = (watermarkText.trim() || selectedWatermark.text || 'AI GENERATED').toUpperCase();
-        context.font = '700 1px Arial, sans-serif';
-        const textWidthAtUnitSize = context.measureText(label).width;
-        const widthBasedFontSize = targetMarkWidth / (textWidthAtUnitSize + 1.8);
-        const heightBasedFontSize = maxMarkHeight / 2.2;
-        fontSize = Math.min(widthBasedFontSize, heightBasedFontSize);
-        context.font = '700 ' + fontSize + 'px Arial, sans-serif';
-        const textWidth = context.measureText(label).width;
-
-        paddingX = fontSize * 0.9;
-        paddingY = fontSize * 0.6;
-        markWidth = Math.min(maxMarkWidth, textWidth + paddingX * 2);
-        markHeight = fontSize + paddingY * 2;
+      const result = drawWatermark({
+        canvas: previewCanvas,
+        sourceImage,
+        watermarkImage,
+        watermark: {
+          type: selectedWatermarkType,
+          text: selectedWatermarkText,
+          image: selectedWatermarkImage,
+        },
+        watermarkText,
+        position,
+        opacity,
+        scale,
+        brightness,
+      });
+      if (result) {
+        setImageSize(result);
+        setCanvasReady(true);
       }
-
-      let x = margin;
-      let y = margin;
-
-      if (position.includes('right')) {
-        x = width - margin - markWidth;
-      } else if (position.includes('center')) {
-        x = (width - markWidth) / 2;
-      }
-
-      if (position === 'center' || position.startsWith('middle')) {
-        y = (height - markHeight) / 2;
-      } else if (position.startsWith('bottom')) {
-        y = height - margin - markHeight;
-      }
-
-      const watermarkColor = brightnessColor(brightness);
-      context.save();
-      context.globalAlpha = opacity / 100;
-
-      if (selectedWatermark.type === 'image') {
-        const tintedWatermark = createTintedWatermark(
-          watermarkImage as HTMLImageElement,
-          imageWidth,
-          imageHeight,
-          watermarkColor,
-        );
-
-        if (tintedWatermark) {
-          context.drawImage(
-            tintedWatermark,
-            x + paddingX,
-            y + paddingY,
-            imageWidth,
-            imageHeight,
-          );
-        }
-      } else {
-        context.fillStyle = watermarkColor;
-        context.font = '700 ' + fontSize + 'px Arial, sans-serif';
-        context.textBaseline = 'middle';
-        context.fillText(label, x + paddingX, y + markHeight / 2);
-      }
-      context.restore();
-      setCanvasReady(true);
     }
 
     sourceImage.onload = () => {
@@ -614,7 +505,7 @@ export default function Home() {
         setCanvasReady(false);
         setNotice('That watermark image could not be loaded. Check its image link.');
       };
-      watermarkImage.src = selectedWatermark.image ?? '';
+      watermarkImage.src = selectedWatermarkImage ?? '';
     }
 
     sourceImage.src = imageSource;
@@ -635,9 +526,9 @@ export default function Home() {
     position,
     scale,
     selectedWatermark.id,
-    selectedWatermark.image,
-    selectedWatermark.text,
-    selectedWatermark.type,
+    selectedWatermarkImage,
+    selectedWatermarkText,
+    selectedWatermarkType,
     watermarkText,
   ]);
 
@@ -893,7 +784,7 @@ export default function Home() {
     setNotice(`Added ${providerName} / ${label}.`);
   }
 
-  function chooseWatermarkOption(option: WatermarkOption) {
+  function chooseWatermarkOption(option: WatermarkChoice) {
     setSelectedWatermarkId(option.id);
     setWatermarkText(
       option.type === 'text' ? option.text : option.watermark.toUpperCase(),
