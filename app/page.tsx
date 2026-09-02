@@ -6,17 +6,37 @@ import type {
   DragEvent,
   FormEvent,
   KeyboardEvent,
+  PointerEvent as ReactPointerEvent,
 } from 'react';
 import Link from 'next/link';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import defaultWatermarkConfig from '../config/watermarks.json';
+import { detectRegion } from './detect';
+import { fullImageRegion, type Point, type Region } from './region';
 import {
   drawWatermark,
   type WatermarkDefinition,
-  type WatermarkPosition,
 } from './watermark';
 
-type Position = WatermarkPosition;
+type CornerIndex = 0 | 1 | 2 | 3;
+
+type Dimensions = {
+  width: number;
+  height: number;
+};
+
+type PreviewBounds = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
 
 type ExportFormat = 'png' | 'jpg';
 type WatermarkType = 'text' | 'image';
@@ -63,6 +83,15 @@ const sizeSliderCenter = 50;
 const defaultWatermarkScale = 15;
 const watermarkScaleCenter = 15;
 const defaultProviders = defaultWatermarkConfig.providers as ProviderConfig[];
+const regionCornerOptions: Array<{
+  index: CornerIndex;
+  label: string;
+}> = [
+  { index: 0, label: 'Top left region corner' },
+  { index: 1, label: 'Top right region corner' },
+  { index: 2, label: 'Bottom right region corner' },
+  { index: 3, label: 'Bottom left region corner' },
+];
 
 function flattenWatermarkConfig(providers: ProviderConfig[]) {
   return providers.flatMap((provider) =>
@@ -211,24 +240,26 @@ function optionDomId(id: string) {
   return id.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
-const positionOptions: Array<{
-  id: Position;
-  label: string;
-  symbol: string;
-}> = [
-  { id: 'top-left', label: 'Top left', symbol: '↖' },
-  { id: 'top-center', label: 'Top center', symbol: '↑' },
-  { id: 'top-right', label: 'Top right', symbol: '↗' },
-  { id: 'middle-left', label: 'Middle left', symbol: '←' },
-  { id: 'center', label: 'Center', symbol: '•' },
-  { id: 'middle-right', label: 'Middle right', symbol: '→' },
-  { id: 'bottom-left', label: 'Bottom left', symbol: '↙' },
-  { id: 'bottom-center', label: 'Bottom center', symbol: '↓' },
-  { id: 'bottom-right', label: 'Bottom right', symbol: '↘' },
-];
-
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+function mapPoint(point: Point, source: Dimensions, target: Dimensions): Point {
+  if (!source.width || !source.height) {
+    return { x: 0, y: 0 };
+  }
+
+  return {
+    x: (point.x / source.width) * target.width,
+    y: (point.y / source.height) * target.height,
+  };
+}
+
+function clampPoint(point: Point, bounds: Dimensions): Point {
+  return {
+    x: clamp(point.x, 0, bounds.width),
+    y: clamp(point.y, 0, bounds.height),
+  };
 }
 
 function rangeFill(value: number, minimum: number, maximum: number) {
@@ -369,11 +400,14 @@ function createDemoImage() {
 
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const watermarkPickerRef = useRef<HTMLDivElement>(null);
   const watermarkSearchRef = useRef<HTMLInputElement>(null);
   const addWatermarkProviderRef = useRef<HTMLSelectElement>(null);
   const addWatermarkLabelRef = useRef<HTMLInputElement>(null);
+  const activeCornerRef = useRef<CornerIndex | null>(null);
+  const hasInteractedWithRegionRef = useRef(false);
 
   const [imageSource, setImageSource] = useState<string | null>(null);
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(
@@ -407,11 +441,16 @@ export default function Home() {
   const [newWatermarkText, setNewWatermarkText] = useState('');
   const [newWatermarkImage, setNewWatermarkImage] = useState('');
   const [addWatermarkError, setAddWatermarkError] = useState<string | null>(null);
-  const [position, setPosition] = useState<Position>('bottom-right');
   const [opacity, setOpacity] = useState(50);
   const [scale, setScale] = useState(defaultWatermarkScale);
   const [brightness, setBrightness] = useState(100);
   const [exportFormat, setExportFormat] = useState<ExportFormat>('png');
+  const [region, setRegion] = useState<Region | null>(null);
+  const [regionSource, setRegionSource] = useState<'detected' | 'manual' | null>(null);
+  const [isDetectingRegion, setIsDetectingRegion] = useState(false);
+  const [isRegionOverlayVisible, setIsRegionOverlayVisible] = useState(false);
+  const [activeCorner, setActiveCorner] = useState<CornerIndex | null>(null);
+  const [previewBounds, setPreviewBounds] = useState<PreviewBounds | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [canvasReady, setCanvasReady] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -463,6 +502,145 @@ export default function Home() {
     return saveProviderConfigs(update(providerConfigs));
   }
 
+  function getImagePointFromPointer(event: ReactPointerEvent): Point | null {
+    const canvas = canvasRef.current;
+    if (!canvas || !imageSize) {
+      return null;
+    }
+
+    const canvasRect = canvas.getBoundingClientRect();
+    if (!canvasRect.width || !canvasRect.height) {
+      return null;
+    }
+
+    return clampPoint(
+      mapPoint(
+        {
+          x: event.clientX - canvasRect.left,
+          y: event.clientY - canvasRect.top,
+        },
+        { width: canvasRect.width, height: canvasRect.height },
+        imageSize,
+      ),
+      imageSize,
+    );
+  }
+
+  function updateRegionCorner(index: CornerIndex, point: Point) {
+    if (!imageSize) {
+      return;
+    }
+
+    hasInteractedWithRegionRef.current = true;
+    setRegionSource('manual');
+    setRegion((currentRegion) => {
+      const nextCorners = [
+        ...(currentRegion ?? fullImageRegion(imageSize.width, imageSize.height))
+          .corners,
+      ] as Region['corners'];
+      nextCorners[index] = clampPoint(point, imageSize);
+      return { corners: nextCorners };
+    });
+  }
+
+  function nudgeRegionCorner(index: CornerIndex, deltaX: number, deltaY: number) {
+    if (!imageSize) {
+      return;
+    }
+
+    hasInteractedWithRegionRef.current = true;
+    setRegionSource('manual');
+    setRegion((currentRegion) => {
+      const baseRegion =
+        currentRegion ?? fullImageRegion(imageSize.width, imageSize.height);
+      const currentCorner = baseRegion.corners[index];
+      const nextCorners = [...baseRegion.corners] as Region['corners'];
+      nextCorners[index] = clampPoint(
+        {
+          x: currentCorner.x + deltaX,
+          y: currentCorner.y + deltaY,
+        },
+        imageSize,
+      );
+      return { corners: nextCorners };
+    });
+  }
+
+  function handleCornerPointerDown(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    index: CornerIndex,
+  ) {
+    if (!imageSize) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    hasInteractedWithRegionRef.current = true;
+    activeCornerRef.current = index;
+    setActiveCorner(index);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleCornerPointerMove(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    index: CornerIndex,
+  ) {
+    if (activeCornerRef.current !== index) {
+      return;
+    }
+
+    const point = getImagePointFromPointer(event);
+    if (point) {
+      updateRegionCorner(index, point);
+    }
+  }
+
+  function handleCornerPointerEnd(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    index: CornerIndex,
+  ) {
+    if (activeCornerRef.current !== index) {
+      return;
+    }
+
+    activeCornerRef.current = null;
+    setActiveCorner(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function handleCornerKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: CornerIndex,
+  ) {
+    const step = event.shiftKey ? 10 : 1;
+    const deltas: Record<string, Point> = {
+      ArrowUp: { x: 0, y: -step },
+      ArrowRight: { x: step, y: 0 },
+      ArrowDown: { x: 0, y: step },
+      ArrowLeft: { x: -step, y: 0 },
+    };
+    const delta = deltas[event.key];
+
+    if (!delta) {
+      return;
+    }
+
+    event.preventDefault();
+    nudgeRegionCorner(index, delta.x, delta.y);
+  }
+
+  function resetRegion() {
+    hasInteractedWithRegionRef.current = true;
+    activeCornerRef.current = null;
+    setActiveCorner(null);
+    setRegion(null);
+    setRegionSource(null);
+    setIsRegionOverlayVisible(Boolean(imageSource));
+  }
+
   useEffect(() => {
     const canvas = canvasRef.current;
 
@@ -507,10 +685,10 @@ export default function Home() {
           image: selectedWatermarkImage,
         },
         watermarkText,
-        position,
         opacity,
         scale,
         brightness,
+        region: region ?? undefined,
       });
       if (result) {
         setImageSize(result);
@@ -554,14 +732,113 @@ export default function Home() {
     brightness,
     imageSource,
     opacity,
-    position,
     scale,
     selectedWatermark.id,
     selectedWatermarkImage,
     selectedWatermarkText,
     selectedWatermarkType,
+    region,
     watermarkText,
   ]);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    const stage = stageRef.current;
+
+    if (!canvas || !stage || !imageSource) {
+      setPreviewBounds(null);
+      return;
+    }
+
+    const previewCanvas = canvas;
+    const previewStage = stage;
+
+    function measurePreview() {
+      const canvasRect = previewCanvas.getBoundingClientRect();
+      const stageRect = previewStage.getBoundingClientRect();
+
+      if (!canvasRect.width || !canvasRect.height) {
+        return;
+      }
+
+      const nextBounds = {
+        left: canvasRect.left - stageRect.left - previewStage.clientLeft,
+        top: canvasRect.top - stageRect.top - previewStage.clientTop,
+        width: canvasRect.width,
+        height: canvasRect.height,
+      };
+
+      setPreviewBounds((currentBounds) => {
+        if (
+          currentBounds &&
+          currentBounds.left === nextBounds.left &&
+          currentBounds.top === nextBounds.top &&
+          currentBounds.width === nextBounds.width &&
+          currentBounds.height === nextBounds.height
+        ) {
+          return currentBounds;
+        }
+
+        return nextBounds;
+      });
+    }
+
+    measurePreview();
+    window.addEventListener('resize', measurePreview);
+
+    const resizeObserver =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(measurePreview);
+    resizeObserver?.observe(previewCanvas);
+    resizeObserver?.observe(previewStage);
+
+    return () => {
+      window.removeEventListener('resize', measurePreview);
+      resizeObserver?.disconnect();
+    };
+  }, [imageSource, imageSize]);
+
+  useEffect(() => {
+    if (!imageSource) {
+      return;
+    }
+
+    let isCancelled = false;
+    const sourceImage = new Image();
+    sourceImage.decoding = 'async';
+    sourceImage.onload = async () => {
+      try {
+        const detection = await detectRegion(sourceImage);
+        if (!detection || isCancelled || hasInteractedWithRegionRef.current) {
+          return;
+        }
+
+        setRegion(detection.region);
+        setRegionSource('detected');
+        setIsRegionOverlayVisible(true);
+        setNotice('Drawing region detected. Drag the corners to adjust it.');
+      } catch {
+        // Detection is an enhancement. The full-image editor remains usable.
+      } finally {
+        if (!isCancelled) {
+          setIsDetectingRegion(false);
+        }
+      }
+    };
+    sourceImage.onerror = () => {
+      if (!isCancelled) {
+        setIsDetectingRegion(false);
+      }
+    };
+    sourceImage.src = imageSource;
+
+    return () => {
+      isCancelled = true;
+      sourceImage.onload = null;
+      sourceImage.onerror = null;
+    };
+  }, [imageSource]);
 
   useEffect(() => {
     if (!isWatermarkMenuOpen) {
@@ -624,7 +901,13 @@ export default function Home() {
 
     const reader = new FileReader();
     reader.onload = () => {
+      hasInteractedWithRegionRef.current = false;
       setImageSource(String(reader.result));
+      setImageSize(null);
+      setRegion(null);
+      setRegionSource(null);
+      setIsDetectingRegion(true);
+      setIsRegionOverlayVisible(true);
       setSourceLabel(file.name);
       setFileName(file.name.replace(/\.[^/.]+$/, '') || 'grokmark-export');
       setNotice(null);
@@ -657,16 +940,28 @@ export default function Home() {
       return;
     }
 
+    hasInteractedWithRegionRef.current = false;
     setImageSource(demoImage);
-    setImageSize({ width: 1600, height: 1200 });
+    setImageSize(null);
+    setRegion(null);
+    setRegionSource(null);
+    setIsDetectingRegion(true);
+    setIsRegionOverlayVisible(true);
     setSourceLabel('GrokMark sample illustration');
     setFileName('grokmark-sample');
     setNotice('Sample loaded. Try moving the mark or changing its text.');
   }
 
   function clearImage() {
+    hasInteractedWithRegionRef.current = false;
     setImageSource(null);
     setImageSize(null);
+    setRegion(null);
+    setRegionSource(null);
+    setIsDetectingRegion(false);
+    setIsRegionOverlayVisible(false);
+    activeCornerRef.current = null;
+    setActiveCorner(null);
     setSourceLabel('No image loaded');
     setCanvasReady(false);
     setNotice(null);
@@ -853,6 +1148,10 @@ export default function Home() {
   const displaySize = imageSize
     ? imageSize.width + ' × ' + imageSize.height
     : 'Waiting for an image';
+  const displayRegion = imageSize
+    ? region ?? fullImageRegion(imageSize.width, imageSize.height)
+    : null;
+  const scaleReference = region ? 'region width' : 'image width';
 
   return (
     <main className="app-shell">
@@ -1080,27 +1379,52 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="control-section">
+          <div className="control-section region-section">
             <div className="section-heading">
-              <span className="section-label">Position</span>
+              <div className="section-heading__stack">
+                <span className="section-label">Region</span>
+                <span className="section-helper">Where the mark sits</span>
+              </div>
               <span className="section-value">
-                {positionOptions.find((option) => option.id === position)?.label}
+                {isDetectingRegion
+                  ? 'Finding drawing'
+                  : regionSource === 'detected'
+                    ? 'Detected'
+                    : regionSource === 'manual'
+                      ? 'Custom'
+                      : 'Whole image'}
               </span>
             </div>
-            <div className="position-grid" aria-label="Watermark position">
-              {positionOptions.map((option) => (
-                <button
-                  className={position === option.id ? 'position-button is-selected' : 'position-button'}
-                  key={option.id}
-                  type="button"
-                  onClick={() => setPosition(option.id)}
-                  aria-label={option.label}
-                  aria-pressed={position === option.id}
-                >
-                  {option.symbol}
-                </button>
-              ))}
+            <div className="region-actions">
+              <button
+                className={
+                  isRegionOverlayVisible
+                    ? 'quiet-button region-toggle is-active'
+                    : 'quiet-button region-toggle'
+                }
+                type="button"
+                aria-pressed={isRegionOverlayVisible}
+                disabled={!imageSource}
+                onClick={() => {
+                  activeCornerRef.current = null;
+                  setActiveCorner(null);
+                  setIsRegionOverlayVisible((current) => !current);
+                }}
+              >
+                {isRegionOverlayVisible ? 'Hide overlay' : 'Show overlay'}
+              </button>
+              <button
+                className="quiet-button region-reset"
+                type="button"
+                disabled={!imageSource || !region}
+                onClick={resetRegion}
+              >
+                {regionSource === 'detected' ? 'Use whole image' : 'Reset'}
+              </button>
             </div>
+            <p className="section-helper region-helper">
+              Drag the four corners to frame the drawing.
+            </p>
           </div>
 
           <div className="control-section">
@@ -1131,7 +1455,7 @@ export default function Home() {
                   Size
                 </label>
                 <output htmlFor="scale">
-                  {formatWatermarkScale(scale)} of image width
+                  {formatWatermarkScale(scale)} of {scaleReference}
                 </output>
               </div>
               <input
@@ -1141,11 +1465,13 @@ export default function Home() {
                 max={sizeSliderMax}
                 step={sizeSliderStep}
                 value={sizeSliderValue}
-                aria-label="Watermark size relative to image width"
+                aria-label={'Watermark size relative to ' + scaleReference}
                 aria-valuemin={minWatermarkScale}
                 aria-valuemax={maxWatermarkScale}
                 aria-valuenow={scale}
-                aria-valuetext={formatWatermarkScale(scale) + ' of image width'}
+                aria-valuetext={
+                  formatWatermarkScale(scale) + ' of ' + scaleReference
+                }
                 style={
                   {
                     '--range-fill': rangeFill(
@@ -1231,9 +1557,83 @@ export default function Home() {
             </span>
           </div>
 
-          <div className={'canvas-stage' + (imageSource ? ' has-image' : '')}>
+          <div
+            ref={stageRef}
+            className={'canvas-stage' + (imageSource ? ' has-image' : '')}
+          >
             {imageSource ? (
-              <canvas ref={canvasRef} aria-label="Watermarked image preview" />
+              <>
+                <canvas ref={canvasRef} aria-label="Watermarked image preview" />
+                {isRegionOverlayVisible && displayRegion && previewBounds ? (
+                  <div
+                    className="region-overlay"
+                    role="group"
+                    aria-label="Watermark region"
+                    style={{
+                      left: previewBounds.left,
+                      top: previewBounds.top,
+                      width: previewBounds.width,
+                      height: previewBounds.height,
+                    }}
+                  >
+                    <svg
+                      className="region-overlay__outline"
+                      viewBox={`0 0 ${imageSize?.width ?? 0} ${imageSize?.height ?? 0}`}
+                      preserveAspectRatio="none"
+                      aria-hidden="true"
+                    >
+                      <polygon
+                        points={displayRegion.corners
+                          .map((corner) => `${corner.x},${corner.y}`)
+                          .join(' ')}
+                      />
+                    </svg>
+                    {regionCornerOptions.map((cornerOption) => {
+                      const corner = displayRegion.corners[cornerOption.index];
+                      const previewPoint = mapPoint(
+                        corner,
+                        imageSize ?? { width: 1, height: 1 },
+                        { width: 100, height: 100 },
+                      );
+
+                      return (
+                        <button
+                          className={
+                            activeCorner === cornerOption.index
+                              ? 'region-handle is-active'
+                              : 'region-handle'
+                          }
+                          key={cornerOption.index}
+                          type="button"
+                          aria-label={cornerOption.label}
+                          style={{
+                            left: `${previewPoint.x}%`,
+                            top: `${previewPoint.y}%`,
+                          }}
+                          onPointerDown={(event) =>
+                            handleCornerPointerDown(event, cornerOption.index)
+                          }
+                          onPointerMove={(event) =>
+                            handleCornerPointerMove(event, cornerOption.index)
+                          }
+                          onPointerUp={(event) =>
+                            handleCornerPointerEnd(event, cornerOption.index)
+                          }
+                          onPointerCancel={(event) =>
+                            handleCornerPointerEnd(event, cornerOption.index)
+                          }
+                          onLostPointerCapture={(event) =>
+                            handleCornerPointerEnd(event, cornerOption.index)
+                          }
+                          onKeyDown={(event) =>
+                            handleCornerKeyDown(event, cornerOption.index)
+                          }
+                        />
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </>
             ) : (
               <div className="sample-art" aria-label="Sample artwork preview">
                 <span className="sample-art__sun" />
